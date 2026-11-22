@@ -283,3 +283,78 @@ MaskList compute_candidate_keys(AttrMask universe, const FDList *fds) {
 
     return keys;
 }
+
+
+/*
+ * Verifica se o esquema (universe, fds) satisfaz BCNF e 3FN e imprime o diagnostico.
+ *
+ * Definicoes aplicadas para cada DF nao trivial de RHS unitario (X -> A):
+ * - BCNF exige: X e superchave (X+ == U).
+ * - 3FN  exige: X e superchave OU A e atributo primo (pertence a alguma chave candidata).
+ *
+ * Teorema da suficiencia: testar as DFs decompostas de F (ignorando triviais) e
+ * equivalente a testar todo o fecho F+.
+ */
+void check_normal_forms(AttrMask universe, const FDList *fds) {
+    /* 1) Encontra todas as chaves candidatas para determinar os atributos primos */
+    MaskList keys = compute_candidate_keys(universe, fds);
+
+    /* Um atributo e primo se aparece em pelo menos uma chave candidata (uniao via OR) */
+    AttrMask prime_attrs = 0u;
+    for (size_t i = 0; i < keys.count; i++) {
+        prime_attrs |= keys.items[i];
+    }
+
+    /* 2) Decompoe F em DFs nao triviais de RHS unitario sem duplicatas */
+    FDList unitary = decompose_unitary(fds);
+    FDList bcnf_violations;
+    FDList nf3_violations;
+    fdlist_init(&bcnf_violations);
+    fdlist_init(&nf3_violations);
+
+    /* 3) Classifica cada DF quanto a BCNF e 3FN */
+    for (size_t i = 0; i < unitary.count; i++) {
+        AttrMask lhs = unitary.items[i].lhs;
+        AttrMask rhs = unitary.items[i].rhs;
+
+        /* X e superchave sse o fecho de X sob F determina todo o universo U */
+        bool is_superkey = (compute_closure(lhs, fds) == universe);
+        if (!is_superkey) {
+            /* Se X nao e superchave (e a DF e nao trivial), ja viola BCNF */
+            fdlist_push(&bcnf_violations, lhs, rhs);
+
+            /* Como BCNF => 3FN, so pode haver violacao de 3FN quando ja violou BCNF */
+            bool is_prime = (prime_attrs & rhs) != 0u;
+            if (!is_prime) {
+                fdlist_push(&nf3_violations, lhs, rhs);
+            }
+        }
+    }
+
+    /* 4) Imprime status geral seguido do detalhamento no formato exato do enunciado */
+    printf("BCNF: %s\n", (bcnf_violations.count == 0) ? "OK" : "VIOLATIONS");
+    printf("3NF: %s\n", (nf3_violations.count == 0) ? "OK" : "VIOLATIONS");
+
+    for (size_t i = 0; i < bcnf_violations.count; i++) {
+        char lhs_str[MAX_ATTRS + 1];
+        char rhs_str[MAX_ATTRS + 1];
+        mask_to_str(bcnf_violations.items[i].lhs, lhs_str);
+        mask_to_str(bcnf_violations.items[i].rhs, rhs_str);
+        printf("VIOLATION BCNF: %s->%s (%s not superkey)\n", lhs_str, rhs_str, lhs_str);
+    }
+
+    for (size_t i = 0; i < nf3_violations.count; i++) {
+        char lhs_str[MAX_ATTRS + 1];
+        char rhs_str[MAX_ATTRS + 1];
+        mask_to_str(nf3_violations.items[i].lhs, lhs_str);
+        mask_to_str(nf3_violations.items[i].rhs, rhs_str);
+        printf("VIOLATION 3NF: %s->%s (%s not prime, %s not superkey)\n",
+               lhs_str, rhs_str, rhs_str, lhs_str);
+    }
+
+    /* Libera todas as estruturas auxiliares */
+    fdlist_free(&nf3_violations);
+    fdlist_free(&bcnf_violations);
+    fdlist_free(&unitary);
+    masklist_free(&keys);
+}
