@@ -1,10 +1,10 @@
 CC      = gcc
-CFLAGS  = -std=c11 -Wall -Wextra -O2
+CFLAGS  = -std=c11 -Wall -Wextra -O2 -Isrc
 TARGET  = fdtool
 
-SRCS    = main.c parser.c algorithms.c
+SRCS    = $(wildcard src/*.c)
 OBJS    = $(SRCS:.c=.o)
-HDRS    = fdtool.h
+HDRS    = $(wildcard src/*.h)
 
 .PHONY: all clean rebuild
 
@@ -13,7 +13,7 @@ all: $(TARGET)
 $(TARGET): $(OBJS)
 	$(CC) $(CFLAGS) -o $@ $(OBJS)
 
-%.o: %.c $(HDRS)
+src/%.o: src/%.c $(HDRS)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 clean:
