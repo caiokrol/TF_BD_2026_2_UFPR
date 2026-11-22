@@ -94,3 +94,93 @@ static FDList decompose_unitary(const FDList *fds) {
 
     return unitary;
 }
+
+FDList compute_mincover(const FDList *fds) {
+    /* Passo 1: decompor RHS em atributos unitarios e remover triviais/duplicadas */
+    FDList g = decompose_unitary(fds);
+    if (g.count == 0) {
+        return g;
+    }
+
+    /*
+     * Passo 2: remocao de atributos estranhos no LHS.
+     * Um atributo B em X e estranho em (X -> A) se e somente se A continua
+     * pertencendo ao fecho de (X \ {B}) calculado sobre o conjunto atual G.
+     * Como atualizar X para (X \ {B}) preserva G+, o fecho dos demais testes nao muda.
+     */
+    for (size_t i = 0; i < g.count; i++) {
+        for (int bit = 0; bit < MAX_ATTRS; bit++) {
+            AttrMask attr = (AttrMask)(1u << bit);
+            if ((g.items[i].lhs & attr) == 0u) {
+                continue;
+            }
+
+            AttrMask reduced = g.items[i].lhs & ~attr;
+            if (reduced == 0u) {
+                continue; /* nao reduz para LHS vazio */
+            }
+
+            /* Usa G completo (incluindo a propria DF i) conforme a definicao formal */
+            AttrMask cl = compute_closure(reduced, &g);
+            if ((cl & g.items[i].rhs) != 0u) {
+                g.items[i].lhs = reduced; /* atributo confirmado como estranho: remove */
+            }
+        }
+    }
+
+    /*
+     * Passo 3: remocao de duplicatas e de DFs redundantes.
+     * O vetor `removed` marca exclusoes imediatas sem realocar `g` durante os testes.
+     */
+    bool *removed = (bool *)calloc(g.count, sizeof(bool));
+    if (!removed) {
+        fprintf(stderr, "Erro: falha ao alocar memoria na cobertura minima.\n");
+        exit(EXIT_FAILURE);
+    }
+
+    /*
+     * Reduzir o LHS no Passo 2 pode tornar duas DFs identicas (ex: AB->C vira A->C,
+     * que ja existia). Removemos as copias extras mantendo a primeira ocorrencia.
+     */
+    for (size_t i = 0; i < g.count; i++) {
+        if (removed[i]) {
+            continue;
+        }
+        for (size_t j = i + 1; j < g.count; j++) {
+            if (!removed[j] &&
+                g.items[j].lhs == g.items[i].lhs &&
+                g.items[j].rhs == g.items[i].rhs) {
+                removed[j] = true;
+            }
+        }
+    }
+
+    /*
+     * Uma DF fi = (X -> A) e redundante se A ainda pertence a X+ calculado em G \ {fi}.
+     * Marcar `removed[i] = true` imediatamente e essencial: em ciclos ou DFs mutuamente
+     * redundantes, impede que duas DFs equivalentes sejam removidas ao mesmo tempo.
+     */
+    for (size_t i = 0; i < g.count; i++) {
+        if (removed[i]) {
+            continue;
+        }
+        AttrMask cl = compute_closure_skip(g.items[i].lhs, &g, removed, i);
+        if ((cl & g.items[i].rhs) != 0u) {
+            removed[i] = true;
+        }
+    }
+
+    /* Monta a lista final apenas com as DFs que sobreviveram as 3 etapas */
+    FDList result;
+    fdlist_init(&result);
+    for (size_t i = 0; i < g.count; i++) {
+        if (!removed[i]) {
+            fdlist_push(&result, g.items[i].lhs, g.items[i].rhs);
+        }
+    }
+
+    free(removed);
+    fdlist_free(&g);
+    return result;
+}
+
