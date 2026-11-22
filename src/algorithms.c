@@ -184,3 +184,102 @@ FDList compute_mincover(const FDList *fds) {
     return result;
 }
 
+
+/*
+ * Dada uma superchave `key` (key+ == universe), tenta remover cada atributo
+ * individualmente de forma gulosa: se o conjunto sem aquele atributo continuar
+ * determinando todo o universo U, ele era redundante e e descartado.
+ * Ao final, nenhum subconjunto proprio determina U -> resultado e chave candidata.
+ */
+static AttrMask minimize_superkey(AttrMask key, AttrMask universe, const FDList *fds) {
+    for (int bit = 0; bit < MAX_ATTRS; bit++) {
+        AttrMask attr = (AttrMask)(1u << bit);
+        if ((key & attr) != 0u) {
+            AttrMask candidate = key & ~attr;
+            if (compute_closure(candidate, fds) == universe) {
+                key = candidate;
+            }
+        }
+    }
+    return key;
+}
+
+/* Comparador para qsort: ordena chaves candidatas lexicograficamente (ex: AC antes de BD) */
+static int compare_masks(const void *a, const void *b) {
+    char sa[MAX_ATTRS + 1];
+    char sb[MAX_ATTRS + 1];
+    mask_to_str(*(const AttrMask *)a, sa);
+    mask_to_str(*(const AttrMask *)b, sb);
+    return strcmp(sa, sb);
+}
+
+/*
+ * Encontra TODAS as chaves candidatas do esquema usando o algoritmo de
+ * Lucchesi-Osborn (1978), evitando busca exaustiva sobre todos os 2^|U| subconjuntos.
+ *
+ * Ideia teorica:
+ * 1) Partimos de U (sempre superchave) e minimizamos para obter uma primeira chave K0.
+ * 2) Para cada chave K ja descoberta e cada DF (X -> Y) em F com K n Y != vazio:
+ *    formamos S = X U (K \ Y). S e sempre superchave, pois X deriva Y, e Y com (K \ Y)
+ *    recupera K, que por sua vez deriva todo U.
+ * 3) Se S nao contiver nenhuma chave ja conhecida, minimizamos S para obter uma nova
+ *    chave candidata garantidamente inedita e a adicionamos na fila `keys`.
+ */
+MaskList compute_candidate_keys(AttrMask universe, const FDList *fds) {
+    MaskList keys;
+    masklist_init(&keys);
+
+    if (universe == 0u) {
+        return keys;
+    }
+
+    /* Passo 1: obtem a primeira chave candidata minimizando o universo completo U */
+    AttrMask first_key = minimize_superkey(universe, universe, fds);
+    masklist_push(&keys, first_key);
+
+    /*
+     * Passo 2: `keys` funciona como uma fila crescente (keys.count aumenta dentro do laco).
+     * Cada chave descoberta e combinada com todas as DFs ate nenhuma chave nova surgir.
+     */
+    for (size_t i = 0; i < keys.count; i++) {
+        AttrMask k = keys.items[i];
+
+        for (size_t j = 0; j < fds->count; j++) {
+            AttrMask lhs = fds->items[j].lhs;
+            AttrMask rhs = fds->items[j].rhs;
+
+            /* Otimizacao: se Y nao toca K, entao (K \ Y) == K e S conteria K */
+            if ((k & rhs) == 0u) {
+                continue;
+            }
+
+            /* Substitui os atributos de Y presentes em K pelo determinante X */
+            AttrMask s = lhs | (k & ~rhs);
+
+            /*
+             * Testa se alguma chave conhecida ja e subconjunto de S.
+             * Se for, minimizar S nao garante chave nova (ou gera duplicata).
+             * Se nao for, existe necessariamente uma chave candidata inedita dentro de S.
+             */
+            bool has_known_subset = false;
+            for (size_t m = 0; m < keys.count; m++) {
+                if ((s & keys.items[m]) == keys.items[m]) {
+                    has_known_subset = true;
+                    break;
+                }
+            }
+
+            if (!has_known_subset) {
+                AttrMask new_key = minimize_superkey(s, universe, fds);
+                masklist_push(&keys, new_key);
+            }
+        }
+    }
+
+    /* Ordena as chaves em ordem alfabetica para saida deterministica */
+    if (keys.count > 1) {
+        qsort(keys.items, keys.count, sizeof(AttrMask), compare_masks);
+    }
+
+    return keys;
+}
